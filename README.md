@@ -1,131 +1,106 @@
-# Praxis Bookings v2 — Accounts + Stripe-ready payments
+# Praxis Bookings v3 — Firebase Accounts + Firestore
 
-## What changed
+This version replaces the local SQLite/browser storage approach with Firebase Authentication and Cloud Firestore.
 
-This version moves the product from a browser-only prototype to a real Node/Express application with:
+## Firebase setup
 
-- Business account creation
-- Secure password hashing with bcrypt
-- Login/logout sessions
-- SQLite database
-- Separate business records
-- Services stored per business
-- Staff stored per business
-- Availability stored per business
-- Public booking URLs
-- Real booking records
-- Server-side slot checking
-- Stripe Checkout integration
-- Stripe webhook handling
-- Paid/confirmed booking state
-- Stripe connection state on each business
+1. Create a project in Firebase Console.
+2. Enable **Authentication → Sign-in method → Email/Password**.
+3. Create a **Firestore Database**.
+4. Add a Web App to the Firebase project.
+5. Copy the Firebase web configuration into `firebase-config.js`.
+6. Deploy the included `firestore.rules`.
 
-## Run locally
+## Run
 
-1. Install Node.js 20+.
-2. Copy `.env.example` to `.env`.
-3. Set `SESSION_SECRET`.
-4. For Stripe test payments, add your Stripe test secret key as `STRIPE_SECRET_KEY`.
-5. Run:
+Because Firebase modules are loaded in the browser, serve this folder over HTTP rather than opening index.html directly.
 
-npm install
-npm run dev
+For example:
+
+python -m http.server 8080
 
 Then open:
 
-http://localhost:3000
+http://localhost:8080
 
-## Stripe
+Or deploy to Firebase Hosting / Vercel / Netlify.
 
-The booking endpoint creates a Stripe Checkout Session when the business has a Stripe account connected.
+## Data structure
 
-For a production multi-business SaaS, use **Stripe Connect**. Each business should complete Connect onboarding and Praxis should store its connected Stripe account ID.
+businesses/{businessId}
+- ownerId
+- name
+- category
+- email
+- phone
+- address
+- slug
+- stripeConnected
 
-The intended production payment flow is:
+businesses/{businessId}/services/{serviceId}
 
-Customer books
-→ Praxis creates pending booking
-→ Stripe Checkout
-→ customer pays
-→ Stripe sends `checkout.session.completed`
-→ webhook marks booking paid + confirmed
+businesses/{businessId}/staff/{staffId}
 
-Never mark a paid booking as paid from the browser return URL alone. The webhook is the source of truth.
+businesses/{businessId}/availability/{weekday}
 
-### Local webhook testing
+businesses/{businessId}/settings/general
 
-With the Stripe CLI installed:
+businesses/{businessId}/bookings/{bookingId}
 
-stripe listen --forward-to localhost:3000/api/stripe/webhook
+## Authentication
 
-Put the generated `whsec_...` value into `STRIPE_WEBHOOK_SECRET`.
+The signup page uses Firebase Authentication with email/password.
 
-Use Stripe test card:
+Each business is tied to the authenticated Firebase UID. The dashboard only loads the current user's business.
 
-4242 4242 4242 4242
+## Stripe — important
 
-Any future expiry and CVC can be used in Stripe's test environment.
+Firebase should hold the application data, but **Stripe secret keys must never be placed in `app.js` or `firebase-config.js`**.
 
-## Stripe Connect production addition
+For production payments, use a trusted backend such as:
 
-The current UI has a "Connect Stripe" placeholder. To make marketplace payouts production-ready, add:
+- Firebase Cloud Functions
+- Cloud Run
+- A Node/Express API
 
-- `POST /api/stripe/connect`
-- Create a Stripe Express connected account
-- Create an Account Link
-- Redirect the business through Stripe onboarding
-- Save `acct_...` to `businesses.stripe_account_id`
-- Set `stripe_connected=1` only after Stripe confirms the account is ready
-- Add `transfer_data.destination` / appropriate Connect charge structure to Checkout
-- Handle Connect account webhooks and failed payments/refunds
+Recommended payment flow:
 
-This should be done server-side.
+Customer booking
+→ Firestore creates pending booking
+→ HTTPS Cloud Function creates Stripe Checkout Session
+→ Customer pays on Stripe
+→ Stripe webhook reaches trusted backend
+→ Backend verifies webhook signature
+→ Firestore booking becomes paid + confirmed
 
-## Important production work still required
+For a multi-business SaaS, use **Stripe Connect** so each business can connect its own Stripe account.
 
-Before charging real customers:
+The Connect flow should:
+1. Create an Express connected account.
+2. Generate a Stripe Account Link.
+3. Send the business through Stripe onboarding.
+4. Store the connected `acct_...` ID in `businesses/{businessId}`.
+5. Create Checkout Sessions on behalf of the connected account / use the appropriate Connect charge structure.
+6. Use webhooks for successful payments, refunds and failed payments.
 
-- HTTPS
-- Secure production session store
-- Secure cookies
-- CSRF protection where appropriate
-- Rate limiting
-- Email confirmation/reminders
-- SMS/WhatsApp reminders
-- Password reset
-- Email verification
-- Account deletion/export
-- GDPR/privacy tooling
-- Stripe Connect onboarding
-- Refunds
-- Rescheduling
-- Double-booking protection with stronger transactional locking
-- Database hosting/backups
-- Proper multi-user roles
-- Audit logging
-- Error monitoring
-- Production payment/refund testing
+## Production security
 
-## Suggested SaaS pricing
+Before going live:
+- Review and tighten Firestore rules.
+- Do not allow unrestricted public reads of sensitive business documents.
+- Separate public booking-page data from private business data.
+- Add App Check.
+- Add email verification.
+- Add password reset.
+- Add rate limiting / abuse protection.
+- Validate all booking input server-side.
+- Prevent race-condition double bookings using a trusted backend/transaction.
+- Put Stripe operations exclusively in trusted server-side code.
+- Add GDPR controls and deletion/export workflows.
+- Add proper transactional email/SMS reminders.
 
-Starter — £19/month
-- 1 staff member
-- 3 services
-- Booking page
-- Email confirmations
+## Current status
 
-Growth — £49/month
-- 5 staff
-- Unlimited services
-- Stripe payments
-- Reminders
-- Customer database
+The UI and account/database layer are Firebase-ready and the booking flow writes to Firestore.
 
-Pro — £99/month
-- Unlimited staff
-- Multiple locations
-- Advanced reporting
-- Calendar integrations
-- Custom branding
-
-Transaction fees should be disclosed separately. Stripe fees are paid to Stripe and Praxis can optionally charge its own platform fee if the commercial model and Stripe Connect setup support it.
+The Stripe button is deliberately a safe placeholder: the next production implementation should connect it to a Firebase Cloud Function / backend rather than exposing Stripe secrets in the browser.

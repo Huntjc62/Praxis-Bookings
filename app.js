@@ -1,54 +1,199 @@
-const app=document.getElementById("app");let dashboard=null;let publicData=null;let booking={service:null,date:new Date().toISOString().slice(0,10),time:null,step:1};let mode="login";
+import { initializeApp } from "https://www.gstatic.com/firebasejs/12.1.0/firebase-app.js";
+import {
+  getAuth, onAuthStateChanged, createUserWithEmailAndPassword,
+  signInWithEmailAndPassword, signOut, updateProfile
+} from "https://www.gstatic.com/firebasejs/12.1.0/firebase-auth.js";
+import {
+  getFirestore, doc, getDoc, setDoc, addDoc, collection,
+  query, where, orderBy, getDocs, updateDoc, serverTimestamp,
+  deleteDoc
+} from "https://www.gstatic.com/firebasejs/12.1.0/firebase-firestore.js";
+import { firebaseConfig } from "./firebase-config.js";
 
-const api=async(url,opt={})=>{const r=await fetch(url,{headers:{"Content-Type":"application/json",...(opt.headers||{})},...opt});const j=await r.json().catch(()=>({}));if(!r.ok)throw Error(j.error||"Something went wrong");return j};
-const money=p=>(Number(p)/100).toLocaleString("en-GB",{style:"currency",currency:"GBP"});
+const app=initializeApp(firebaseConfig);
+const auth=getAuth(app);
+const db=getFirestore(app);
+const root=document.getElementById("app");
+
+let currentUser=null, business=null, data={services:[],staff:[],bookings:[],availability:[]};
+let authMode="login";
+
 const esc=s=>String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[m]));
-const initials=s=>String(s).split(" ").map(x=>x[0]).join("").slice(0,2).toUpperCase();
+const money=p=>(Number(p)/100).toLocaleString("en-GB",{style:"currency",currency:"GBP"});
+const slug=s=>String(s).toLowerCase().trim().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"").slice(0,60);
+const today=()=>new Date().toISOString().slice(0,10);
+const initials=s=>String(s||"").split(" ").map(x=>x[0]).join("").slice(0,2).toUpperCase();
 
-async function start(){const me=await api("/api/auth/me");if(me.signedIn){await loadDash();return}renderAuth()}
-function renderAuth(){app.innerHTML=`<div class="center"><div class="card" style="max-width:480px;width:100%"><div class="logo">praxis<i>•</i>bookings</div><h1>${mode==="login"?"Welcome back":"Create your business account"}</h1><p class="sub">${mode==="login"?"Sign in to manage your bookings.":"Set up your booking business in a few minutes."}</p>
-${mode==="signup"?`<div class="field"><label>Business name</label><input id="businessName" placeholder="Northside Grooming"></div><div class="field"><label>Business type</label><input id="category" placeholder="Dog groomer"></div>`:""}
-<div class="field"><label>Email</label><input id="email" type="email" placeholder="you@business.co.uk"></div><div class="field"><label>Password</label><input id="password" type="password" placeholder="At least 8 characters"></div>
-<button class="btn primary" style="width:100%" onclick="${mode==="login"?"login()":"signup()"}">${mode==="login"?"Sign in":"Create account"}</button>
-<p class="small" style="text-align:center;margin-top:16px">${mode==="login"?'New to Praxis? <a href="#" onclick="mode=\'signup\';renderAuth()">Create an account</a>':'Already have an account? <a href="#" onclick="mode=\'login\';renderAuth()">Sign in</a>'}</p></div></div>`}
-async function login(){try{await api("/api/auth/login",{method:"POST",body:JSON.stringify({email:email.value,password:password.value})});await loadDash()}catch(e){alert(e.message)}}
-async function signup(){try{await api("/api/auth/signup",{method:"POST",body:JSON.stringify({email:email.value,password:password.value,businessName:businessName.value,category:category.value})});await loadDash()}catch(e){alert(e.message)}}
-async function loadDash(){dashboard=await api("/api/dashboard");renderDash("overview")}
-function nav(view){renderDash(view)}
-function renderDash(view){
-const b=dashboard.business, bs=dashboard.bookings, revenue=bs.filter(x=>x.payment_status==="paid").reduce((a,x)=>a+x.amount_pence,0);
-app.innerHTML=`<header class="top"><div class="logo">praxis<i>•</i>bookings</div><div><button class="btn light" onclick="openPublic()">View booking page</button><button class="btn primary" onclick="logout()">Sign out</button></div></header><div class="layout"><aside class="side">
-<button class="${view==="overview"?"active":""}" onclick="nav('overview')">▦ Dashboard</button><button class="${view==="bookings"?"active":""}" onclick="nav('bookings')">▤ Bookings</button><button class="${view==="calendar"?"active":""}" onclick="nav('calendar')">▦ Calendar</button><button class="${view==="services"?"active":""}" onclick="nav('services')">◈ Services</button><button class="${view==="staff"?"active":""}" onclick="nav('staff')">● Staff</button><button class="${view==="availability"?"active":""}" onclick="nav('availability')">◷ Availability</button><button class="${view==="settings"?"active":""}" onclick="nav('settings')">⚙ Settings</button></aside><main class="main">${content(view,b,revenue,bs)}</main></div>`}
-function head(k,t,s,a=""){return `<div class="head"><div><div class="eyebrow">${k}</div><h1 class="title">${t}</h1><p class="sub">${s}</p></div><div class="actions">${a}</div></div>`}
-function content(v,b,revenue,bs){
-if(v==="overview")return head("Dashboard","Good evening 👋","Your business at a glance.",`<button class="btn primary" onclick="openPublic()">Open booking page</button>`) + `<div class="grid stats">${stat(bs.filter(x=>x.booking_date===new Date().toISOString().slice(0,10)).length,"Today's bookings")} ${stat(bs.filter(x=>x.status!=="cancelled").length,"Upcoming bookings")} ${stat(money(revenue),"Paid revenue")} ${stat(Math.round(bs.filter(x=>x.status==="confirmed").length/Math.max(bs.length,1)*100)+"%","Confirmation rate")}</div><div class="card" style="margin-top:18px"><h2>Recent bookings</h2>${bookingTable(bs.slice().reverse().slice(0,8))}</div>`;
-if(v==="bookings")return head("Manage","Bookings","All appointments and payment statuses.",`<button class="btn primary" onclick="openPublic()">New booking</button>`)+`<div class="card">${bookingTable(bs)}</div>`;
-if(v==="calendar")return calendar(bs);
-if(v==="services")return services();
-if(v==="staff")return staff();
-if(v==="availability")return availability();
-return settings(b);
+onAuthStateChanged(auth, async user=>{
+  currentUser=user;
+  if(user){ await loadBusiness(); renderDashboard("overview"); }
+  else renderAuth();
+});
+
+function renderAuth(){
+ root.innerHTML=`<div class="auth-shell"><div class="auth-card">
+ <div class="logo">praxis<span>•</span>bookings</div>
+ <div class="eyebrow">${authMode==="login"?"BUSINESS LOGIN":"GET STARTED"}</div>
+ <h1>${authMode==="login"?"Welcome back":"Create your business account"}</h1>
+ <p class="muted">${authMode==="login"?"Sign in to manage bookings, staff and payments.":"Set up your booking business and get your own online booking page."}</p>
+ <div id="authError" class="error"></div>
+ ${authMode==="signup"?`
+ <div class="field"><label>Business name</label><input id="businessName" placeholder="Northside Grooming"></div>
+ <div class="field"><label>Business type</label><input id="businessType" placeholder="Dog groomer"></div>`:""}
+ <div class="field"><label>Email address</label><input id="email" type="email" placeholder="you@business.co.uk"></div>
+ <div class="field"><label>Password</label><input id="password" type="password" placeholder="Minimum 8 characters"></div>
+ <button class="btn primary full" id="authBtn">${authMode==="login"?"Log in":"Create account"}</button>
+ <button class="link-btn" id="switchAuth">${authMode==="login"?"Don't have an account? Sign up":"Already have an account? Log in"}</button>
+ </div></div>`;
+ document.getElementById("authBtn").onclick=authMode==="login"?login:signup;
+ document.getElementById("switchAuth").onclick=()=>{authMode=authMode==="login"?"signup":"login";renderAuth()};
 }
-function stat(v,l){return `<div class="card"><div class="value">${v}</div><div class="small">${l}</div></div>`}
-function bookingTable(bs){return `<div style="overflow:auto"><table><thead><tr><th>Customer</th><th>Service</th><th>Date</th><th>Staff</th><th>Payment</th><th>Status</th></tr></thead><tbody>${bs.map(x=>`<tr><td><b>${esc(x.customer_name)}</b><div class="small">${esc(x.customer_email)}</div></td><td>${esc(x.service_name)}</td><td>${esc(x.booking_date)}<br>${esc(x.booking_time)}</td><td>${esc(x.staff_name||"Team")}</td><td><span class="status ${x.payment_status==="paid"?"paid":"pending"}">${x.payment_status}</span></td><td><span class="status ${x.status}">${x.status}</span></td></tr>`).join("")}</tbody></table></div>`}
-function services(){return head("Business","Services","Set prices, duration and booking buffers.",`<button class="btn primary" onclick="addService()">Add service</button>`)+`<div class="grid three">${dashboard.services.map(s=>`<div class="card"><h2>${esc(s.name)}</h2><div class="value">${money(s.price_pence)}</div><p class="muted">${s.duration} minutes · ${s.buffer} min buffer</p></div>`).join("")}</div>`}
-async function addService(){const name=prompt("Service name");if(!name)return;const price=prompt("Price in £","25");const duration=prompt("Duration in minutes","60");const buffer=prompt("Buffer in minutes","10");await api("/api/services",{method:"POST",body:JSON.stringify({name,price,duration,buffer})});await loadDash();nav("services")}
-function staff(){return head("Business","Staff","People who can take bookings.",`<button class="btn primary" onclick="addStaff()">Add staff</button>`)+`<div class="grid three">${dashboard.staff.map(s=>`<div class="card"><h2>${esc(s.name)}</h2><p class="muted">${esc(s.role||"Staff member")}</p><p>${esc(s.email)}</p></div>`).join("")}</div>`}
-async function addStaff(){const name=prompt("Name");if(!name)return;const email=prompt("Email","");const role=prompt("Role","Staff member");await api("/api/staff",{method:"POST",body:JSON.stringify({name,email,role})});await loadDash();nav("staff")}
-function availability(){const names=["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];return head("Business","Availability","Set the hours customers can book.",`<button class="btn primary" onclick="saveAvailability()">Save</button>`)+`<div class="card">${names.map((n,i)=>{const a=dashboard.availability.find(x=>x.weekday===i)||{enabled:0,open_time:"09:00",close_time:"17:00"};return `<div style="display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--line)"><b style="width:100px">${n}</b><input id="en${i}" type="checkbox" ${a.enabled?"checked":""}><input id="op${i}" type="time" value="${a.open_time||"09:00"}"><input id="cl${i}" type="time" value="${a.close_time||"17:00"}"></div>`}).join("")}</div>`}
-async function saveAvailability(){const rows=[];for(let i=0;i<7;i++)rows.push({weekday:i,enabled:document.getElementById("en"+i).checked,open_time:document.getElementById("op"+i).value,close_time:document.getElementById("cl"+i).value});await api("/api/availability",{method:"POST",body:JSON.stringify({rows})});await loadDash();nav("availability")}
-function settings(b){return head("Business","Settings","Manage your account and business profile.",`<button class="btn primary" onclick="saveBusiness()">Save</button>`)+`<div class="card"><div class="formgrid">${field("Business name","bn",b.name)}${field("Category","bc",b.category)}${field("Email","be",b.email)}${field("Phone","bp",b.phone)}<div class="field full">${field("Address","ba",b.address)}</div></div><hr><h2>Stripe</h2><div class="notice">${b.stripe_connected?"Stripe is connected. Online payments are enabled for this business.":"Stripe is not connected yet. Connect Stripe in the production onboarding flow to take payments."}</div><button class="btn dark" style="margin-top:12px" onclick="connectStripe()">Connect Stripe</button><p class="small">This demo includes the Stripe Checkout integration path. Stripe Connect onboarding should be added here for live marketplace payouts.</p></div>`}
-function field(l,id,v){return `<div class="field"><label>${l}</label><input id="${id}" value="${esc(v||"")}"></div>`}
-async function saveBusiness(){await api("/api/business",{method:"POST",body:JSON.stringify({name:bn.value,category:bc.value,email:be.value,phone:bp.value,address:ba.value})});await loadDash();nav("settings")}
-function connectStripe(){alert("Stripe Connect onboarding is the next production step. Add a Connect OAuth/Account Link route on the server, then save the connected account ID against this business. Stripe Checkout is already wired to process payments once that connection exists.")}
-function calendar(bs){let base=new Date();base.setHours(12,0,0,0);base.setDate(base.getDate()-base.getDay());let days="";for(let i=0;i<7;i++){let d=new Date(base);d.setDate(base.getDate()+i);let iso=d.toISOString().slice(0,10);days+=`<div class="day"><b>${d.toLocaleDateString("en-GB",{weekday:"short",day:"numeric"})}</b>${bs.filter(x=>x.booking_date===iso).map(x=>`<div class="event"><b>${x.booking_time}</b> ${esc(x.customer_name)}<br>${esc(x.service_name)}</div>`).join("")}</div>`}return head("Schedule","Calendar","This week's bookings.")+`<div class="card"><div class="calendar">${days}</div></div>`}
-function openPublic(){const slug=dashboard.business.slug;window.open("/?book="+encodeURIComponent(slug),"_blank")}
-async function publicPage(slug){publicData=await api("/api/public/"+encodeURIComponent(slug));renderPublic()}
-function renderPublic(){const b=publicData.business;app.innerHTML=`<div class="public"><header class="public-head"><div class="logo">praxis<i>•</i>bookings</div><button class="btn light" onclick="loadDash()">Business login</button></header><div class="booking">${head("Book online",b.name,`${b.category} · ${b.address||""}`)}<div class="booking-grid"><div class="card"><h2>Simple online booking</h2><p class="muted">Choose a service and a convenient time.</p><div class="notice">Payments are processed securely through Stripe when this business has connected Stripe.</div></div><div class="card">${booking.step===1?serviceStep():booking.step===2?timeStep():detailsStep()}</div></div></div></div>`}
-function serviceStep(){return `<h2>Choose a service</h2>${publicData.services.map(s=>`<div class="service" onclick="selectPublicService(${s.id})"><div><b>${esc(s.name)}</b><div class="small">${s.duration} mins</div></div><b>${money(s.price_pence)}</b></div>`).join("")}`}
-async function selectPublicService(id){booking.service=publicData.services.find(x=>x.id===id);booking.step=2;renderPublic()}
-async function timeStep(){let data=await api(`/api/public/${publicData.business.slug}/slots?service=${booking.service.id}&date=${booking.date}`);return `<h2>Choose a date & time</h2><div class="field"><label>Date</label><input type="date" min="${new Date().toISOString().slice(0,10)}" value="${booking.date}" onchange="booking.date=this.value;renderPublic()"></div><div class="times">${data.slots.map(t=>`<button class="time ${booking.time===t?"selected":""}" onclick="booking.time='${t}';renderPublic()">${t}</button>`).join("")||"<p class='muted'>No times available on this date.</p>"}</div><div style="margin-top:16px"><button class="btn light" onclick="booking.step=1;renderPublic()">Back</button>${booking.time?`<button class="btn primary" onclick="booking.step=3;renderPublic()">Continue</button>`:""}</div>`}
-function detailsStep(){return `<h2>Your details</h2>${field("Full name","cn","")}${field("Email","ce","")}${field("Phone","cp","")}<div class="card" style="margin:10px 0;background:#f7f8fa"><b>${esc(booking.service.name)}</b><div class="muted">${booking.date} at ${booking.time} · ${money(booking.service.price_pence)}</div></div><button class="btn light" onclick="booking.step=2;renderPublic()">Back</button><button class="btn primary" onclick="submitPublicBooking()">Continue to payment</button>`}
-async function submitPublicBooking(){try{const j=await api("/api/public/"+publicData.business.slug+"/book",{method:"POST",body:JSON.stringify({serviceId:booking.service.id,date:booking.date,time:booking.time,customerName:cn.value,customerEmail:ce.value,customerPhone:cp.value})});if(j.paymentRequired&&j.checkoutUrl)location.href=j.checkoutUrl;else{alert("Booking confirmed.");location.href="/booking-success.html?booking="+j.bookingId}}catch(e){alert(e.message)}}
-async function logout(){await api("/api/auth/logout",{method:"POST"});location.reload()}
-const q=new URLSearchParams(location.search);if(q.get("book")){booking={service:null,date:new Date().toISOString().slice(0,10),time:null,step:1};publicPage(q.get("book")).catch(()=>app.innerHTML="<div class='center'><div class='card'><h1>Booking page not found</h1></div></div>")}else start();
+async function login(){
+ try{await signInWithEmailAndPassword(auth,email.value.trim(),password.value)}
+ catch(e){showAuthError(firebaseError(e))}
+}
+async function signup(){
+ try{
+  if(password.value.length<8)throw new Error("Password must be at least 8 characters.");
+  const cred=await createUserWithEmailAndPassword(auth,email.value.trim(),password.value);
+  await updateProfile(cred.user,{displayName:businessName.value.trim()});
+  const businessId=cred.user.uid;
+  business={id:businessId,name:businessName.value.trim(),category:businessType.value.trim()||"Local business",
+    email:cred.user.email,phone:"",address:"",slug:slug(businessName.value)||businessId};
+  await setDoc(doc(db,"businesses",businessId),{...business,ownerId:cred.user.uid,createdAt:serverTimestamp()});
+  await setDoc(doc(db,"businesses",businessId,"settings","general"),{
+    reminders:true,onlinePayments:true,autoConfirm:true,stripeConnected:false
+  });
+  await seedBusiness(businessId);
+ }catch(e){showAuthError(firebaseError(e))}
+}
+function showAuthError(x){const el=document.getElementById("authError");if(el)el.textContent=x}
+function firebaseError(e){
+ const map={"auth/email-already-in-use":"An account with that email already exists.","auth/invalid-email":"Please enter a valid email address.","auth/weak-password":"Use a stronger password.","auth/invalid-credential":"Incorrect email or password."};
+ return map[e.code]||e.message||"Something went wrong.";
+}
+async function seedBusiness(id){
+ const s1=await addDoc(collection(db,"businesses",id,"services"),{name:"Standard Appointment",pricePence:2500,duration:60,buffer:10,active:true,createdAt:serverTimestamp()});
+ await addDoc(collection(db,"businesses",id,"services"),{name:"Premium Appointment",pricePence:4500,duration:90,buffer:15,active:true,createdAt:serverTimestamp()});
+ await addDoc(collection(db,"businesses",id,"staff"),{name:"Business Owner",email:currentUser.email,role:"Owner",createdAt:serverTimestamp()});
+ for(let d=0;d<7;d++)await setDoc(doc(db,"businesses",id,"availability",String(d)),{weekday:d,enabled:d!==0,openTime:"09:00",closeTime:d===6?"15:00":"17:00"});
+}
+
+async function loadBusiness(){
+ const ref=doc(db,"businesses",currentUser.uid), snap=await getDoc(ref);
+ if(!snap.exists()){await signOut(auth);return}
+ business={id:snap.id,...snap.data()};
+ const [services,staff,bookings,availability]=await Promise.all([
+  getDocs(collection(db,"businesses",business.id,"services")),
+  getDocs(collection(db,"businesses",business.id,"staff")),
+  getDocs(query(collection(db,"businesses",business.id,"bookings"),orderBy("createdAt","desc"))),
+  getDocs(collection(db,"businesses",business.id,"availability"))
+ ]);
+ data.services=services.docs.map(x=>({id:x.id,...x.data()}));
+ data.staff=staff.docs.map(x=>({id:x.id,...x.data()}));
+ data.bookings=bookings.docs.map(x=>({id:x.id,...x.data()}));
+ data.availability=availability.docs.map(x=>({id:x.id,...x.data()}));
+}
+
+function shell(view,content){
+ root.innerHTML=`<header class="top"><div class="logo">praxis<span>•</span>bookings</div><div class="top-right"><button class="btn light" id="publicBtn">View booking page</button><div class="avatar">${initials(business.name)}</div><button class="btn primary" id="logout">Log out</button></div></header>
+ <div class="layout"><aside class="side">
+ ${nav("overview","▦","Dashboard",view)}${nav("bookings","▤","Bookings",view)}${nav("calendar","▦","Calendar",view)}${nav("services","◈","Services",view)}${nav("staff","●","Staff",view)}${nav("availability","◷","Availability",view)}${nav("settings","⚙","Settings",view)}
+ </aside><main class="main">${content}</main></div>`;
+ document.getElementById("logout").onclick=()=>signOut(auth);
+ document.getElementById("publicBtn").onclick=()=>window.open(`?book=${encodeURIComponent(business.slug)}`,"_blank");
+}
+function nav(id,icon,label,view){return `<button class="${id===view?"active":""}" data-view="${id}">${icon}<span>${label}</span></button>`}
+function renderDashboard(view){
+ const c=dashboardContent(view);
+ shell(view,c);
+ document.querySelectorAll("[data-view]").forEach(x=>x.onclick=()=>renderDashboard(x.dataset.view));
+}
+function head(k,t,s,action=""){return `<div class="head"><div><div class="eyebrow">${k}</div><h1>${t}</h1><p class="muted">${s}</p></div><div>${action}</div></div>`}
+function stat(v,l){return `<div class="card"><div class="stat-value">${v}</div><div class="muted">${l}</div></div>`}
+
+function dashboardContent(view){
+ if(view==="overview"){
+  const rev=data.bookings.filter(x=>x.paymentStatus==="paid").reduce((a,x)=>a+(x.amountPence||0),0);
+  return head("DASHBOARD","Good evening 👋","Your booking business at a glance.",`<button class="btn primary" onclick="window.open('?book=${encodeURIComponent(business.slug)}','_blank')">Open booking page</button>`)
+  +`<div class="grid stats">${stat(data.bookings.filter(x=>x.bookingDate===today()).length,"Today's bookings")}${stat(data.bookings.filter(x=>x.status!=="cancelled").length,"Total bookings")}${stat(money(rev),"Paid revenue")}${stat(business.stripeConnected?"Connected":"Not connected","Stripe")}</div>
+  <div class="card section"><h2>Recent bookings</h2>${bookingTable(data.bookings.slice(0,10))}</div>`;
+ }
+ if(view==="bookings")return head("MANAGE","Bookings","Appointments, customers and payment status.",`<button class="btn primary" onclick="window.open('?book=${encodeURIComponent(business.slug)}','_blank')">New booking</button>`)+`<div class="card section">${bookingTable(data.bookings)}</div>`;
+ if(view==="services")return servicesView();
+ if(view==="staff")return staffView();
+ if(view==="availability")return availabilityView();
+ if(view==="settings")return settingsView();
+ return calendarView();
+}
+function bookingTable(rows){return `<div class="table-wrap"><table><thead><tr><th>Customer</th><th>Service</th><th>Date</th><th>Staff</th><th>Payment</th><th>Status</th></tr></thead><tbody>${rows.map(x=>`<tr><td><b>${esc(x.customerName)}</b><div class="small">${esc(x.customerEmail)}</div></td><td>${esc(x.serviceName||"Service")}</td><td>${esc(x.bookingDate)}<br>${esc(x.bookingTime)}</td><td>${esc(x.staffName||"Team")}</td><td><span class="status ${x.paymentStatus==="paid"?"paid":"pending"}">${esc(x.paymentStatus||"unpaid")}</span></td><td><span class="status ${x.status}">${esc(x.status)}</span></td></tr>`).join("")}</tbody></table></div>`}
+function servicesView(){return head("BUSINESS","Services","Set prices, durations and buffers.",`<button class="btn primary" id="addService">Add service</button>`)+`<div class="grid three">${data.services.map(s=>`<div class="card"><h2>${esc(s.name)}</h2><div class="stat-value">${money(s.pricePence)}</div><p class="muted">${s.duration} mins · ${s.buffer} min buffer</p></div>`).join("")}</div>`}
+function staffView(){return head("BUSINESS","Staff","Manage the people who take bookings.",`<button class="btn primary" id="addStaff">Add staff</button>`)+`<div class="grid three">${data.staff.map(s=>`<div class="card"><div class="person"><div class="avatar">${initials(s.name)}</div><div><b>${esc(s.name)}</b><div class="muted">${esc(s.role||"Staff")}</div></div></div><p>${esc(s.email)}</p></div>`).join("")}</div>`}
+function availabilityView(){
+ const names=["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+ return head("BUSINESS","Availability","Choose when customers can book.",`<button class="btn primary" id="saveAvailability">Save</button>`)+`<div class="card">${names.map((n,i)=>{const a=data.availability.find(x=>Number(x.weekday)===i)||{enabled:false,openTime:"09:00",closeTime:"17:00"};return `<div class="availability-row"><b>${n}</b><input id="en${i}" type="checkbox" ${a.enabled?"checked":""}><input id="op${i}" type="time" value="${a.openTime||"09:00"}"><input id="cl${i}" type="time" value="${a.closeTime||"17:00"}"></div>`}).join("")}</div>`;
+}
+function settingsView(){return head("BUSINESS","Settings","Manage your business profile and payments.",`<button class="btn primary" id="saveBusiness">Save</button>`)+`<div class="card"><div class="formgrid">${field("Business name","bn",business.name)}${field("Category","bc",business.category)}${field("Email","be",business.email)}${field("Phone","bp",business.phone)}<div class="full">${field("Address","ba",business.address)}</div></div><hr><h2>Stripe payments</h2><div class="notice ${business.stripeConnected?"success-notice":""}">${business.stripeConnected?"Stripe is connected and ready to accept payments.":"Connect Stripe so customers can pay online when booking."}</div><button class="btn dark" id="connectStripe">Connect Stripe</button><p class="small">The Stripe Connect onboarding endpoint should be attached here for production. The booking system is designed so payment confirmation comes from Stripe webhooks.</p></div>`}
+function field(label,id,value){return `<div class="field"><label>${label}</label><input id="${id}" value="${esc(value||"")}"></div>`}
+function calendarView(){
+ let start=new Date();start.setHours(12,0,0,0);start.setDate(start.getDate()-start.getDay());
+ let html="";for(let i=0;i<7;i++){let d=new Date(start);d.setDate(start.getDate()+i);let iso=d.toISOString().slice(0,10);html+=`<div class="day"><b>${d.toLocaleDateString("en-GB",{weekday:"short",day:"numeric"})}</b>${data.bookings.filter(x=>x.bookingDate===iso).map(x=>`<div class="event"><b>${x.bookingTime}</b> ${esc(x.customerName)}<br>${esc(x.serviceName)}</div>`).join("")}</div>`}
+ return head("SCHEDULE","Calendar","Your weekly booking schedule.")+`<div class="card"><div class="calendar">${html}</div></div>`;
+}
+
+document.addEventListener("click",async e=>{
+ if(e.target.id==="addService"){const name=prompt("Service name");if(!name)return;const price=prompt("Price in £","25");const duration=prompt("Duration in minutes","60");const buffer=prompt("Buffer in minutes","10");await addDoc(collection(db,"businesses",business.id,"services"),{name,pricePence:Math.round(Number(price)*100),duration:Number(duration),buffer:Number(buffer),active:true,createdAt:serverTimestamp()});await loadBusiness();renderDashboard("services")}
+ if(e.target.id==="addStaff"){const name=prompt("Staff name");if(!name)return;const email=prompt("Email","");const role=prompt("Role","Staff member");await addDoc(collection(db,"businesses",business.id,"staff"),{name,email,role,createdAt:serverTimestamp()});await loadBusiness();renderDashboard("staff")}
+ if(e.target.id==="saveAvailability"){for(let i=0;i<7;i++)await setDoc(doc(db,"businesses",business.id,"availability",String(i)),{weekday:i,enabled:document.getElementById("en"+i).checked,openTime:document.getElementById("op"+i).value,closeTime:document.getElementById("cl"+i).value});await loadBusiness();renderDashboard("availability")}
+ if(e.target.id==="saveBusiness"){await updateDoc(doc(db,"businesses",business.id),{name:bn.value,category:bc.value,email:be.value,phone:bp.value,address:ba.value});await loadBusiness();renderDashboard("settings")}
+ if(e.target.id==="connectStripe")alert("Connect this button to your Stripe Connect onboarding endpoint. See README for the exact production flow.");
+});
+
+async function publicBooking(slugValue){
+ const snap=await getDoc(doc(db,"businesses",slugValue));
+ if(!snap.exists())throw Error("Booking page not found");
+ publicData={id:snap.id,...snap.data()};
+ const services=await getDocs(query(collection(db,"businesses",snap.id,"services"),where("active","==",true)));
+ publicData.services=services.docs.map(x=>({id:x.id,...x.data()}));
+ publicState={step:1,service:null,date:today(),time:null};
+ renderPublic();
+}
+let publicData=null,publicState=null;
+function renderPublic(){
+ const b=publicData;
+ root.innerHTML=`<div class="public"><header class="public-head"><div class="logo">praxis<span>•</span>bookings</div><button class="btn light" onclick="location.href='/'">Business login</button></header><div class="booking-wrap">${head("BOOK ONLINE",b.name,`${b.category||"Local business"} · ${b.address||""}`)}<div class="booking-grid"><div class="card"><h2>Book an appointment</h2><p class="muted">Choose a service, pick a time and complete your details.</p><div class="feature-list"><p>✓ Secure online payment when Stripe is connected</p><p>✓ Instant booking confirmation</p><p>✓ Booking reminders</p></div></div><div class="card">${publicState.step===1?publicServices():publicState.step===2?publicTimes():publicDetails()}</div></div></div></div>`;
+}
+function publicServices(){return `<h2>Choose a service</h2>${publicData.services.map(s=>`<div class="service" onclick="publicState.service=publicData.services.find(x=>x.id==='${s.id}');publicState.step=2;renderPublic()"><div><b>${esc(s.name)}</b><div class="small">${s.duration} minutes</div></div><b>${money(s.pricePence)}</b></div>`).join("")}`}
+async function publicTimes(){
+ const d=new Date(publicState.date+"T12:00:00"), av=await getDoc(doc(db,"businesses",publicData.id,"availability",String(d.getDay())));
+ const a=av.exists()?av.data():null;let slots=[];
+ if(a?.enabled){const [sh,sm]=a.openTime.split(":").map(Number),[eh,em]=a.closeTime.split(":").map(Number);for(let m=sh*60+sm;m+publicState.service.duration<=eh*60+em;m+=30)slots.push(String(Math.floor(m/60)).padStart(2,"0")+":"+String(m%60).padStart(2,"0"))}
+ const q=await getDocs(query(collection(db,"businesses",publicData.id,"bookings"),where("bookingDate","==",publicState.date),where("status","in",["pending","confirmed"])));
+ const taken=q.docs.map(x=>x.data().bookingTime);slots=slots.filter(x=>!taken.includes(x));
+ return `<h2>Choose a date & time</h2><div class="field"><label>Date</label><input id="pubDate" type="date" min="${today()}" value="${publicState.date}"></div><div class="times">${slots.map(t=>`<button class="time ${publicState.time===t?"selected":""}" onclick="publicState.time='${t}';renderPublic()">${t}</button>`).join("")||"<p class='muted'>No availability on this date.</p>"}</div><div class="actions-bottom"><button class="btn light" onclick="publicState.step=1;renderPublic()">Back</button>${publicState.time?`<button class="btn primary" onclick="publicState.step=3;renderPublic()">Continue</button>`:""}</div>`;
+}
+function publicDetails(){return `<h2>Your details</h2>${field("Full name","pname","")}${field("Email","pemail","")}${field("Phone","pphone","")}<div class="summary"><b>${esc(publicState.service.name)}</b><div>${publicState.date} at ${publicState.time} · ${money(publicState.service.pricePence)}</div></div><button class="btn light" onclick="publicState.step=2;renderPublic()">Back</button><button class="btn primary" id="confirmPublic">Continue to payment</button>`}
+document.addEventListener("change",e=>{if(e.target.id==="pubDate"){publicState.date=e.target.value;publicState.time=null;renderPublic()}});
+
+document.addEventListener("click",async e=>{
+ if(e.target.id==="confirmPublic"){
+  if(!pname.value||!pemail.value){alert("Please enter your name and email.");return}
+  const staffSnap=await getDocs(collection(db,"businesses",publicData.id,"staff"));const staff=staffSnap.docs[0];
+  const bookingRef=await addDoc(collection(db,"businesses",publicData.id,"bookings"),{
+   serviceId:publicState.service.id,serviceName:publicState.service.name,staffId:staff?.id||"",staffName:staff?.data().name||"Team",
+   customerName:pname.value,customerEmail:pemail.value,customerPhone:pphone.value,
+   bookingDate:publicState.date,bookingTime:publicState.time,amountPence:publicState.service.pricePence,
+   status:business?.stripeConnected?"pending":"confirmed",paymentStatus:"unpaid",createdAt:serverTimestamp()
+  });
+  // IMPORTANT: real Stripe Checkout must be created by a trusted server/Cloud Function.
+  // The browser never receives a Stripe secret key.
+  alert("Booking created. In the production Stripe flow this button will create a Stripe Checkout Session on the server and redirect the customer to Stripe.");
+  location.href=`/?book=${encodeURIComponent(publicData.slug)}`;
+ }
+});
+
+async function init(){
+ const q=new URLSearchParams(location.search);
+ if(q.get("book")){try{await publicBooking(q.get("book"))}catch(e){root.innerHTML=`<div class="center"><div class="card"><h1>Booking page not found</h1><p>${esc(e.message)}</p></div></div>`}}
+}
+init();
