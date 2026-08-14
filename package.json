@@ -1,9 +1,18 @@
 {
   "name": "praxis-bookings",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
-  "description": "Praxis local business booking system prototype",
+  "type": "module",
   "scripts": {
-    "start": "npx serve ."
+    "dev": "node server.js",
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.10.0",
+    "bcryptjs": "^3.0.2",
+    "dotenv": "^16.6.1",
+    "express": "^5.1.0",
+    "express-session": "^1.18.2",
+    "stripe": "^18.4.0"
   }
 }
